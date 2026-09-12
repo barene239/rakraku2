@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ざっくり家計簿 - PDF解析プロトタイプ</title>
+    <!-- Tailwind CSS (デザイン用) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Chart.js (グラフ用) -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- PDF.js (ブラウザ内PDFテキスト解析用) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script>
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    </script>
+    <style>
+        body { font-family: 'Helvetica Neue', Arial, 'Hiragino Kaku Gothic ProN', sans-serif; background-color: #f4f6f9; }
+        .glass-card { background: rgba(255, 255, 255, 0.95); border-radius: 16px; box-shadow: 0 4px 20px rgba(0,0,0,0.04); }
+        .tab-btn.active { border-bottom: 3px solid #4f46e5; color: #4f46e5; font-weight: bold; }
+    </style>
+</head>
+<body class="text-gray-800 pb-12">
+
+<div class="max-w-4xl mx-auto p-4 md:p-6 space-y-6">
+
+    <!-- ヘッダー -->
+    <header class="flex justify-between items-center glass-card p-4 md:p-6">
+        <div>
+            <h1 class="text-2xl font-bold text-indigo-600">ざっくり家計簿</h1>
+            <p class="text-xs text-gray-500">カード明細PDFを読み込んで一発全自動整理</p>
+        </div>
+        <div class="text-right">
+            <span class="text-xs text-gray-400">今月の合計支出 (固定費込)</span>
+            <div class="text-2xl font-black text-gray-800" id="headerTotal">¥0</div>
+        </div>
+    </header>
+
+    <!-- PDFアップロードエリア -->
+    <section class="glass-card p-6 text-center border-2 border-dashed border-indigo-200 hover:border-indigo-400 transition cursor-pointer" id="dropArea">
+        <input type="file" id="pdfInput" accept="application/pdf" class="hidden" onchange="handleFileSelect(event)">
+        <div onclick="document.getElementById('pdfInput').click()" class="space-y-2">
+            <div class="text-indigo-500 text-3xl">📄</div>
+            <p class="font-bold text-gray-700">カード明細のPDFをアップロード・解析</p>
+            <p class="text-xs text-gray-400">ここにファイルをドラッグ＆ドロップ、またはクリックして選択</p>
+        </div>
+        <div id="loadingStatus" class="hidden mt-3 text-indigo-600 font-bold text-sm">
+            ⏳ PDFを解析中... 少々お待ちください
+        </div>
+    </section>
+
+    <!-- ナビゲーションタブ -->
+    <div class="flex border-b border-gray-200 bg-white rounded-t-xl px-4 pt-2">
+        <button id="tabTransactionsBtn" onclick="switchTab('transactions')" class="tab-btn active px-6 py-3 text-sm transition">
+            💳 明細一覧・固定費
+        </button>
+        <button id="tabChartBtn" onclick="switchTab('chart')" class="tab-btn px-6 py-3 text-sm text-gray-500 transition">
+            📊 支出分析（円グラフ）
+        </button>
+    </div>
+
+    <!-- タブ1: 明細一覧 ＆ 固定費 -->
+    <main id="tabTransactions" class="space-y-6">
+        <div class="glass-card p-6">
+            <div class="flex flex-col sm:flex-row justify-between sm:items-center gap-4 mb-4">
+                <h2 class="text-lg font-bold text-gray-700">取り込み済み明細</h2>
+                <div class="flex gap-2">
+                    <button onclick="sortByAmount()" class="text-xs bg-indigo-50 text-indigo-600 px-3 py-2 rounded-lg font-bold hover:bg-indigo-100 transition">
+                        ⇅ 金額順に並び替え
+                    </button>
+                    <button onclick="clearExpenses()" class="text-xs bg-gray-100 text-gray-500 px-3 py-2 rounded-lg hover:bg-gray-200 transition">
+                        クリア
+                    </button>
+                </div>
+            </div>
+
+            <!-- テーブル -->
+            <div class="overflow-x-auto">
+                <table class="w-full text-left text-sm">
+                    <thead>
+                        <tr class="border-b border-gray-200 text-gray-400 text-xs">
+                            <th class="py-2">日付</th>
+                            <th class="py-2">利用項目 / 店舗</th>
+                            <th class="py-2">カテゴリ (AI自動判定)</th>
+                            <th class="py-2 text-right">金額</th>
+                        </tr>
+                    </thead>
+                    <tbody id="expenseList" class="divide-y divide-gray-100">
+                        <!-- 動的に挿入 -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- 固定費追加フォーム -->
+        <div class="glass-card p-6">
+            <h3 class="text-sm font-bold text-gray-700 mb-3">毎月の固定費（家賃・保険・習い事など）を追加</h3>
+            <div class="grid grid-cols-1 sm:grid-cols-4 gap-3">
+                <input type="text" id="fixedName" placeholder="項目名 (例: 家賃)" class="bg-gray-50 p-2.5 rounded-lg text-sm border border-gray-200 outline-none focus:border-indigo-500">
+                <input type="number" id="fixedAmount" placeholder="月額 (例: 120000)" class="bg-gray-50 p-2.5 rounded-lg text-sm border border-gray-200 outline-none focus:border-indigo-500">
+                <select id="fixedCategory" class="bg-gray-50 p-2.5 rounded-lg text-sm border border-gray-200 outline-none">
+                    <option value="住居費">住居費</option>
+                    <option value="通信費">通信費</option>
+                    <option value="保険・税金">保険・税金</option>
+                    <option value="子育て">子育て</option>
+                    <option value="その他">その他</option>
+                </select>
+                <button onclick="addFixedExpense()" class="bg-indigo-600 text-white font-bold p-2.5 rounded-lg text-sm hover:bg-indigo-700 transition">
+                    固定費を追加
+                </button>
+            </div>
+        </div>
+    </main>
+
+    <!-- タブ2: 別タブ化された円グラフ -->
+    <main id="tabChart" class="hidden space-y-6">
+        <div class="glass-card p-6 md:p-8 flex flex-col md:flex-row items-center gap-8">
+            <div class="w-full md:w-1/2 max-w-[320px]">
+                <canvas id="expenseChart"></canvas>
+            </div>
+            <div class="w-full md:w-1/2 space-y-4">
+                <h3 class="text-lg font-bold text-gray-700">カテゴリ別 内訳詳細</h3>
+                <div id="chartBreakdown" class="space-y-2 text-sm divide-y divide-gray-100">
+                    <!-- JSで内訳リストを生成 -->
+                </div>
+            </div>
+        </div>
+    </main>
+
+</div>
+
+<script>
+    // データ保持用データ構造
+    let expenses = [
+        // 初期サンプルデータ（PDF未読み込み時のイメージ）
+        { id: 1, date: '2026/08/29', name: 'スーパーマーケット', category: '食費', amount: 16060 },
+        { id: 2, date: '2026/08/25', name: 'AMAZON CO JP', category: '日用品', amount: 7473 },
+        { id: 3, date: '2026/08/10', name: 'APPLE COMBI LL', category: 'サブスク', amount: 450 },
+        { id: 4, date: '毎月固定', name: '住宅ローン / 家賃', category: '住居費', amount: 110000, isFixed: true }
+    ];
+
+    const categories = ['食費', '日用品', 'サブスク', '通信費', '車両費', '子育て', '住居費', '保険・税金', 'その他'];
+    let isSortedDesc = false;
+    let chartInstance = null;
+
+    // --- タブ切り替え制御 ---
+    function switchTab(tabName) {
+        document.getElementById('tabTransactions').classList.add('hidden');
+        document.getElementById('tabChart').classList.add('hidden');
+        document.getElementById('tabTransactionsBtn').classList.remove('active');
+        document.getElementById('tabChartBtn').classList.remove('active');
+
+        if (tabName === 'transactions') {
+            document.getElementById('tabTransactions').classList.remove('hidden');
+            document.getElementById('tabTransactionsBtn').classList.add('active');
+        } else if (tabName === 'chart') {
+            document.getElementById('tabChart').classList.remove('hidden');
+            document.getElementById('tabChartBtn').classList.add('active');
+            renderChart(); // グラフ表示タブを開いたタイミングで最新グラフを描画
+        }
+    }
+
+    // --- PDF解析エンジン ---
+    async function handleFileSelect(event) {
+        const file = event.target.files[0];
+        if (!file || file.type !== 'application/pdf') {
+            alert('PDFファイルを選択してください。');
+            return;
+        }
+
+        const statusEl = document.getElementById('loadingStatus');
+        statusEl.classList.remove('hidden');
+
+        try {
+            const arrayBuffer = await file.arrayBuffer();
+            const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+            
+            let extractedExpenses = [];
+            
+            for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+                const page = await pdf.getPage(pageNum);
+                const textContent = await page.getTextContent();
+                const textItems = textContent.items.map(item => item.str);
+                
+                // テキストから明細行（日付、名称、金額）を簡易抽出するロジック
+                let parsedItems = parsePdfTextItems(textItems);
+                extractedExpenses = extractedExpenses.concat(parsedItems);
+            }
+
+            if (extractedExpenses.length > 0) {
+                expenses = extractedExpenses; // アップロードデータで置換
+                renderApp();
+                alert(`${extractedExpenses.length} 件の明細を取り込みました！`);
+            } else {
+                alert('明細データが検出できませんでした。別のPDFをお試しください。');
+            }
+        } catch (error) {
+            console.error('PDF Parsing Error:', error);
+            alert('PDFの読み込みに失敗しました。');
+        } finally {
+            statusEl.classList.add('hidden');
+        }
+    }
+
+    // テキスト配列から利用明細パターン（日付・店名・金額）を検出する簡易パーサー
+    function parsePdfTextItems(items) {
+        let results = [];
+        let dateRegex = /^(20\d{2}[\/-]\d{1,2}[\/-]\d{1,2}|\d{2}[\/-]\d{2})$/;
+        
+        for (let i = 0; i < items.length; i++) {
+            let token = items[i].trim();
+            
+            // 日付を検出
+            if (dateRegex.test(token)) {
+                let date = token;
+                let name = 'カード利用明細';
+                let amount = 0;
+
+                // 付近の文字列から店名と金額を探す
+                for (let j = i + 1; j < Math.min(i + 10, items.length); j++) {
+                    let nextToken = items[j].trim();
+                    
+                    // 金額パターン (例: 1,570 や 1570)
+                    if (/^[0-9,]{3,}$/.test(nextToken) && !amount) {
+                        let parsedNum = parseInt(nextToken.replace(/,/g, ''), 10);
+                        if (parsedNum > 0 && parsedNum < 1000000) {
+                            amount = parsedNum;
+                        }
+                    }
+                    // アルファベットや日本語の店舗名
+                    else if (nextToken.length > 2 && name === 'カード利用明細' && !/^[0-9\/]+$/.test(nextToken)) {
+                        name = nextToken;
+                    }
+                }
+
+                if (amount > 0) {
+                    results.push({
+                        id: Date.now() + Math.random(),
+                        date: date,
+                        name: name,
+                        category: autoCategorize(name), // AI（キーワード）自動判定
+                        amount: amount
+                    });
+                }
+            }
+        }
+        return results;
+    }
+
+    // AIカテゴリ自動分類（ルールベース＆キーワードマッチング）
+    function autoCategorize(name) {
+        const str = name.toUpperCase();
+        if (str.includes('AMAZON') || str.includes('日用品') || str.includes('ドラッグ')) return '日用品';
+        if (str.includes('APPLE') || str.includes('GOOGLE') || str.includes('NETFLIX')) return 'サブスク';
+        if (str.includes('SUPER') || str.includes('スーパー') || str.includes('セブン') || str.includes('ローソン') || str.includes('ファミマ')) return '食費';
+        if (str.includes('ガソリン') || str.includes('ETC') || str.includes('駐車') || str.includes('NFC')) return '車両費';
+        if (str.includes('西松屋') || str.includes('アカチャン') || str.includes('ベビー')) return '子育て';
+        if (str.includes('ドコモ') || str.includes('AU') || str.includes('SOFTBANK')) return '通信費';
+        return 'その他';
+    }
+
+    // --- レンダリング処理 ---
+    function renderApp() {
+        renderTable();
+        updateHeaderTotal();
+    }
+
+    function renderTable() {
+        const tbody = document.getElementById('expenseList');
+        tbody.innerHTML = '';
+
+        expenses.forEach(exp => {
+            const tr = document.createElement('tr');
+            tr.className = 'hover:bg-gray-50/50 transition';
+
+            let selectHtml = `<select onchange="updateCategory(${exp.id}, this.value)" class="bg-gray-100 text-xs rounded px-2 py-1 border-none outline-none cursor-pointer">`;
+            categories.forEach(cat => {
+                selectHtml += `<option value="${cat}" ${cat === exp.category ? 'selected' : ''}>${cat}</option>`;
+            });
+            selectHtml += `</select>`;
+
+            tr.innerHTML = `
+                <td class="py-3 text-xs text-gray-400 whitespace-nowrap">${exp.date}</td>
+                <td class="py-3 font-medium text-gray-800">
+                    ${exp.isFixed ? '<span class="bg-indigo-100 text-indigo-600 text-[10px] px-1.5 py-0.5 rounded mr-1">固定</span>' : ''}
+                    ${exp.name}
+                </td>
+                <td class="py-3">${selectHtml}</td>
+                <td class="py-3 text-right font-bold text-gray-700">¥${exp.amount.toLocaleString()}</td>
+            `;
+            tbody.appendChild(tr);
+        });
+    }
+
+    function updateCategory(id, newCat) {
+        const item = expenses.find(e => e.id === id);
+        if (item) {
+            item.category = newCat;
+            updateHeaderTotal();
+        }
+    }
+
+    function updateHeaderTotal() {
+        const total = expenses.reduce((sum, e) => sum + e.amount, 0);
+        document.getElementById('headerTotal').innerText = '¥' + total.toLocaleString();
+    }
+
+    // --- 並び替え＆クリア ---
+    function sortByAmount() {
+        isSortedDesc = !isSortedDesc;
+        expenses.sort((a, b) => isSortedDesc ? b.amount - a.amount : a.amount - b.amount);
+        renderTable();
+    }
+
+    function clearExpenses() {
+        if (confirm('取り込んだ明細をクリアしますか？')) {
+            expenses = [];
+            renderApp();
+        }
+    }
+
+    // --- 固定費追加 ---
+    function addFixedExpense() {
+        const name = document.getElementById('fixedName').value;
+        const amount = parseInt(document.getElementById('fixedAmount').value, 10);
+        const category = document.getElementById('fixedCategory').value;
+
+        if (!name || isNaN(amount) || amount <= 0) {
+            alert('項目名と正しく金額を入力してください。');
+            return;
+        }
+
+        expenses.push({
+            id: Date.now(),
+            date: '毎月固定',
+            name: name,
+            category: category,
+            amount: amount,
+            isFixed: true
+        });
+
+        document.getElementById('fixedName').value = '';
+        document.getElementById('fixedAmount').value = '';
+        renderApp();
+    }
+
+    // --- 円グラフ描画 ---
+    function renderChart() {
+        const ctx = document.getElementById('expenseChart').getContext('2d');
+        const breakdownEl = document.getElementById('chartBreakdown');
+
+        // カテゴリごとの集計
+        const totals = {};
+        let grandTotal = 0;
+        expenses.forEach(e => {
+            totals[e.category] = (totals[e.category] || 0) + e.amount;
+            grandTotal += e.amount;
+        });
+
+        const labels = Object.keys(totals);
+        const data = Object.values(totals);
+
+        // 内訳リスト表示の生成
+        breakdownEl.innerHTML = '';
+        labels.forEach((cat, index) => {
+            const amt = totals[cat];
+            const pct = grandTotal > 0 ? ((amt / grandTotal) * 100).toFixed(1) : 0;
+            breakdownEl.innerHTML += `
+                <div class="flex justify-between items-center pt-2">
+                    <span class="font-medium text-gray-600">${cat}</span>
+                    <div class="text-right">
+                        <span class="font-bold text-gray-800">¥${amt.toLocaleString()}</span>
+                        <span class="text-xs text-gray-400 ml-1">(${pct}%)</span>
+                    </div>
+                </div>
+            `;
+        });
+
+        if (chartInstance) {
+            chartInstance.destroy();
+        }
+
+        chartInstance = new Chart(ctx, {
+            type: 'doughnut',
+            data: {
+                labels: labels,
+                datasets: [{
+                    data: data,
+                    backgroundColor: ['#6366f1', '#ec4899', '#f59e0b', '#10b981', '#3b82f6', '#8b5cf6', '#64748b', '#f97316', '#a855f7'],
+                    borderWidth: 0
+                }]
+            },
+            options: {
+                responsive: true,
+                plugins: {
+                    legend: { position: 'bottom', labels: { boxWidth: 10, padding: 12 } }
+                },
+                cutout: '68%'
+            }
+        });
+    }
+
+    // 初期起動
+    renderApp();
+</script>
+</body>
+</html>
